@@ -21,7 +21,7 @@ static void signal_handler(int signum)
 {
         if (signum == SIGUSR1 || signum == SIGHUP)
                 sig_event_flag = sigev_restart; 
-        else if (signum == SIGUSR2 || signum == SIGTERM || signum == SIGINT)
+        else if (signum == SIGUSR2 || signum == SIGTERM)
                 sig_event_flag = sigev_terminate;
 }
 
@@ -37,7 +37,6 @@ static void register_sigactions(void)
         sigaction(SIGTERM, &sa, NULL);
         sigaction(SIGUSR1, &sa, NULL);
         sigaction(SIGUSR2, &sa, NULL);
-        sigaction(SIGINT, &sa, NULL);
 }
 
 static void block_signals(void)
@@ -48,7 +47,6 @@ static void block_signals(void)
         sigaddset(&mask, SIGTERM);
         sigaddset(&mask, SIGUSR1);
         sigaddset(&mask, SIGUSR2);
-        sigaddset(&mask, SIGINT);
         pthread_sigmask(SIG_BLOCK, &mask, NULL);
 }
 
@@ -75,7 +73,7 @@ static int unlock_more_fds(unsigned int extra_fds_amount)
         return 0;
 }
 
-static void poll_write_is_possible(struct service_worker *serv, int idx)
+static void poll_if_can_write(struct service_worker *serv, int idx)
 {
         serv->fds[idx].events |= POLLOUT;
 }
@@ -191,7 +189,7 @@ static void send_buffer(struct session *sess)
 
 static void handle_request(struct service_worker *serv, struct session *sess)
 {
-        int fd;
+        int res, fd;
         char path[512];
         const char *type;
         struct stat st_buf;
@@ -203,9 +201,15 @@ static void handle_request(struct service_worker *serv, struct session *sess)
                 sess->state = st_goodbye;
                 return;
         }
-        fstat(fd, &st_buf);
+        res = fstat(fd, &st_buf);
+        if (res == -1) {
+                perror("fstat");
+                http_response(sess, status_internal_server_error);
+                sess->state = st_goodbye;
+                close(fd);
+                return;
+        }
         if (S_ISDIR(st_buf.st_mode)) {
-                fprintf(stderr, "YEEES\n");
                 generate_index_page(sess, sess->request->path, fd);
                 close(fd);
                 type = "text/html";
@@ -222,7 +226,7 @@ static void handle_request(struct service_worker *serv, struct session *sess)
         http_content_headers(sess, type, sess->tx_len, st_buf.st_mtime);
         http_crlf(sess);
         send_buffer(sess);
-        poll_write_is_possible(serv, sess->fds_idx);
+        poll_if_can_write(serv, sess->fds_idx);
 }
 
 static void receive_data(struct service_worker *serv, struct session *ptr)

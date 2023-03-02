@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include "template.h"
@@ -81,6 +82,8 @@ const char *fmt1 = "<!DOCTYPE html>\n"
         };
         DIR *dirp;
         struct dirent *dent;
+        struct stat st_buf;
+        int res;
         sess->tx_buf = malloc(TX_BUF_SIZE);
         sess->tx_len = 0;
         dirp = fdopendir(dir_fd);
@@ -88,14 +91,26 @@ const char *fmt1 = "<!DOCTYPE html>\n"
                 perror("fdopendir");
                 return;
         }
+        res = fstat(dir_fd, &st_buf);
+        if (res == -1) {
+                perror("fstat");
+                return;
+        }
         write_fbuf_format(sess, fmt0);
         write_fbuf_format(sess, fmt1);
         write_fbuf_format(sess, fmt2, path, path);
         write_fbuf_format(sess, fmt3);
+        write_fbuf_format(sess, fmt4, "..", "/", "..",
+                          "Parent directory", "/", st_buf.st_size,
+                          get_format_data(st_buf.st_mtime));
+ 
         while ((dent = readdir(dirp))) {
-                struct stat st_buf;
                 const char *s;
                 fstatat(dir_fd, dent->d_name, &st_buf, 0);
+                if (!S_ISREG(st_buf.st_mode) && !S_ISDIR(st_buf.st_mode))
+                        continue;
+                if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, ".."))
+                        continue; 
                 s = S_ISDIR(st_buf.st_mode) ? "/" : "";
                 write_fbuf_format(sess, fmt4, dent->d_name, s, dent->d_name,
                            dent->d_name, s, st_buf.st_size,
