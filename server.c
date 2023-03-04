@@ -20,7 +20,7 @@ static volatile sig_atomic_t sig_event_flag = sigev_no_events;
 static void signal_handler(int signum)
 {
         if (signum == SIGUSR1 || signum == SIGHUP)
-                sig_event_flag = sigev_restart; 
+                sig_event_flag = sigev_restart;
         else if (signum == SIGUSR2 || signum == SIGTERM)
                 sig_event_flag = sigev_terminate;
 }
@@ -73,36 +73,28 @@ static int unlock_more_fds(unsigned int extra_fds_amount)
         return 0;
 }
 
-static void poll_if_can_write(struct service_worker *serv, int idx)
+static void poll_if_can_write(struct service_worker *serv, int fd, void *ctx)
 {
-        serv->fds[idx].events |= POLLOUT;
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLOUT;
+        ev.data.ptr = ctx;
+        epoll_ctl(serv->eventfd, EPOLL_CTL_MOD, fd, &ev);
 }
 
-static void stop_poll_fd(struct service_worker *serv, int idx)
+static void start_poll_fd(struct service_worker *serv, int fd, void *ctx)
 {
-        serv->fds[idx].fd = -1;
-        serv->fds[idx].events = 0;
-        serv->fds[idx].revents = 0;
+        struct epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.ptr = ctx;
+        epoll_ctl(serv->eventfd, EPOLL_CTL_ADD, fd, &ev);
 }
 
-static int start_poll_fd(struct service_worker *serv, int sockfd)
+static void stop_poll_fd(struct service_worker *serv, int fd)
 {
-        int old_size, i;
-        for (i = 0; i < serv->nfds; i++) {
-                if (serv->fds[i].fd == -1) {
-                        serv->fds[i].fd = sockfd;
-                        serv->fds[i].events = POLLIN;
-                        return i;
-                }
-        }
-        old_size = serv->nfds;
-        serv->nfds = old_size ? old_size << 1 : 4;
-        serv->fds = realloc(serv->fds, serv->nfds * sizeof(*serv->fds));
-        for (i = old_size; i < serv->nfds; i++)
-                stop_poll_fd(serv, i);
-        serv->fds[old_size].fd = sockfd;
-        serv->fds[old_size].events = POLLIN;
-        return old_size;
+        struct epoll_event ev;
+        ev.events = 0;
+        ev.data.ptr = NULL;
+        epoll_ctl(serv->eventfd, EPOLL_CTL_DEL, fd, &ev);
 }
 
 static void distribute_task(struct http_server *serv, int sockfd)
@@ -110,7 +102,6 @@ static void distribute_task(struct http_server *serv, int sockfd)
         int i, min, id = 0;
         struct worker_task task;
         task.sockfd = sockfd;
-        /* crit section begin */
         pthread_mutex_lock(&serv->swd->mutex);
         min = serv->swd->requests_per_worker[0];
         for (i = 1; i < serv->workers_amount; i++) {
@@ -121,14 +112,12 @@ static void distribute_task(struct http_server *serv, int sockfd)
         }
         serv->swd->requests_per_worker[id]++;
         pthread_mutex_unlock(&serv->swd->mutex);
-        /* crit section end */
         write(serv->worker_fds[id], &task, sizeof(task));
 }
 
-static struct session *create_session(int idx, int sockfd)
+static struct session *create_session(int sockfd)
 {
         struct session *ptr = malloc(sizeof(*ptr));
-        ptr->fds_idx = idx;
         ptr->socket_d = sockfd;
         ptr->tx_fd = -1;
         ptr->tx_buf = NULL;
@@ -138,6 +127,7 @@ static struct session *create_session(int idx, int sockfd)
         ptr->port = get_peer_port(sockfd);
         ptr->state = st_request;
         ptr->request = NULL;
+        ptr->prev = NULL;
         ptr->next = NULL;
         return ptr;
 }
@@ -153,6 +143,40 @@ static void delete_session(struct session *ptr)
         free(ptr);
 }
 
+static void add_session(struct service_worker *serv)
+{
+        struct session *ctx;
+        struct worker_task task;
+        read(serv->chanfd, &task, sizeof(task));
+        ctx = create_session(task.sockfd);
+        ctx->prev = NULL;
+        ctx->next = serv->sess;
+        if (serv->sess)
+            serv->sess->prev = ctx;
+        serv->sess = ctx;
+        start_poll_fd(serv, ctx->socket_d, ctx);
+#ifdef DEBUG
+        fprintf(stderr, "connection from %s:%d\n", tmp->ipaddr, tmp->port);
+        fprintf(stderr, "Worker[%d]: get task %d\n",
+                serv->worker_id, task.sockfd);
+#endif
+}
+
+static void remove_session(struct service_worker *serv, struct session *ptr)
+{
+        stop_poll_fd(serv, ptr->socket_d);
+        if (ptr->next)
+                ptr->next->prev = ptr->prev;
+        if (ptr->prev)
+                ptr->prev->next = ptr->next;
+        else
+                serv->sess = ptr->next;
+        delete_session(ptr);
+        pthread_mutex_lock(&serv->swd->mutex);
+        serv->swd->requests_per_worker[serv->worker_id]--;
+        pthread_mutex_unlock(&serv->swd->mutex);
+}
+
 static void delete_all_sessions(struct session *sess)
 {
         struct session *tmp;
@@ -160,24 +184,6 @@ static void delete_all_sessions(struct session *sess)
                 tmp = sess;
                 sess = sess->next;
                 delete_session(tmp);
-        }
-}
-
-static void delete_finished_sessions(struct service_worker *serv)
-{
-        struct session **sess = &serv->sess;
-        while (*sess) {
-                if ((*sess)->state == st_goodbye) {
-                        struct session *tmp = *sess;
-                        *sess = (*sess)->next;
-                        stop_poll_fd(serv, tmp->fds_idx);
-                        pthread_mutex_lock(&serv->swd->mutex);
-                        serv->swd->requests_per_worker[serv->worker_id]--;
-                        pthread_mutex_unlock(&serv->swd->mutex);
-                        delete_session(tmp);
-                } else {
-                        sess = &(*sess)->next;
-                }
         }
 }
 
@@ -198,6 +204,8 @@ static void handle_request(struct service_worker *serv, struct session *sess)
         if (fd == -1) {
                 perror(path);
                 http_response(sess, status_not_found);
+                http_crlf(sess);
+                send_buffer(sess);
                 sess->state = st_goodbye;
                 return;
         }
@@ -226,7 +234,7 @@ static void handle_request(struct service_worker *serv, struct session *sess)
         http_content_headers(sess, type, sess->tx_len, st_buf.st_mtime);
         http_crlf(sess);
         send_buffer(sess);
-        poll_if_can_write(serv, sess->fds_idx);
+        poll_if_can_write(serv, sess->socket_d, sess);
 }
 
 static void receive_data(struct service_worker *serv, struct session *ptr)
@@ -234,7 +242,6 @@ static void receive_data(struct service_worker *serv, struct session *ptr)
         int rc, busy = ptr->buf_used;
         rc = tcp_recv(ptr->socket_d, ptr->buf + busy, INBUFSIZE - busy);
         if (rc <= 0) {
-                serv->has_finished = 1;
                 ptr->state = st_goodbye;
                 return;
         }
@@ -256,76 +263,57 @@ static void send_data(struct service_worker *serv, struct session *ptr)
         ssize_t wc;
         if (ptr->state == st_process)
                 wc = tcp_sendfile(ptr->socket_d, ptr->tx_fd, ptr->tx_len);
-        else
+        else if (ptr->state == st_sendbuf)
                 wc = tcp_send(ptr->socket_d, ptr->tx_buf + ptr->tx_wc, ptr->tx_len);
-        if (wc <= 0) {
-                serv->has_finished = 1;
+        else
+                return;
+        if (wc <= 0)
                 ptr->state = st_goodbye;
-        }
         ptr->tx_len -= wc;
         ptr->tx_wc += wc;
-        if (ptr->tx_len <= 0) {
+        if (ptr->tx_len <= 0)
                 ptr->state = st_goodbye;
-                serv->has_finished = 1;
-        }
 }
 
 static void worker_terminate(struct service_worker *serv)
 {
         fprintf(stderr, "worker[%d]: terminating...\n", serv->worker_id);
-        close(serv->fds[0].fd);
+        close(serv->eventfd);
+        close(serv->chanfd);
         delete_all_sessions(serv->sess);
-        free(serv->fds);
         free(serv);
-}
-
-static void read_control_channel(struct service_worker *serv)
-{
-        int idx;
-        struct session *tmp;
-        struct worker_task task;
-        read(serv->fds[0].fd, &task, sizeof(task));
-/*        fprintf(stderr, "Worker[%d]: get task %d\n",
-                        serv->worker_id, task.sockfd);*/
-        idx = start_poll_fd(serv, task.sockfd);
-        tmp = create_session(idx, task.sockfd);
-        tmp->next = serv->sess;
-        serv->sess = tmp;
-/*        fprintf(stderr, "connection from %s:%d\n", tmp->ipaddr, tmp->port);*/
 }
 
 static void *worker_thread(void *data)
 {
         struct service_worker *w = (struct service_worker *)data;
-        struct session *tmp;
-        int res;
+        int i, nfds;
         block_signals();
         for (;;) {
-                res = poll(w->fds, w->nfds, w->timeout);
-                if (res == -1) {
-                        perror("poll");
+                nfds = epoll_wait(w->eventfd, w->events, EVENT_MAX, w->timeout);
+                if (nfds == -1) {
+                        perror("epoll_wait");
                         abort();
                 }
-                if (w->fds[0].revents & POLLHUP) {
-                        worker_terminate(w);
-                        break;
-                }
-                if (w->fds[0].revents & POLLIN) {
-                        read_control_channel(w);
-                        w->fds[0].revents = 0;
-                }
-                for (tmp = w->sess; tmp; tmp = tmp->next) {
-                        if (w->fds[tmp->fds_idx].revents & POLLIN)
-                                receive_data(w, tmp);
-                        if (w->fds[tmp->fds_idx].revents & POLLOUT)
-                                send_data(w, tmp);
-                        w->fds[tmp->fds_idx].revents = 0;
-                }
-                if (w->has_finished) {
-                        delete_finished_sessions(w);
-                        w->has_finished = 0;
+                for (i = 0; i < nfds; i++) {
+                        struct session *context = w->events[i].data.ptr;
+                        if (context) {
+                                if (w->events[i].events & POLLIN)
+                                        receive_data(w, context);
+                                if (w->events[i].events & POLLOUT)
+                                        send_data(w, context);
+                                if (context->state == st_goodbye)
+                                        remove_session(w, context);
+                        } else {
+                                if (w->events[i].events & EPOLLHUP)
+                                        goto break_event_loop;
+                                if (w->events[i].events & POLLIN)
+                                        add_session(w);
+                        }
                 }
         }
+break_event_loop:
+        worker_terminate(w);
         pthread_exit(NULL);
 }
 
@@ -333,16 +321,19 @@ static struct service_worker *make_worker(struct http_server *serv, int id)
 {
         int fd[2];
         struct service_worker *sw = malloc(sizeof(*sw));
+        sw->eventfd = epoll_create(1);
+        if (sw->eventfd == -1) {
+                perror("epoll_create");
+                /* handle error */
+        }
         sw->worker_id = id;
         sw->workdir_fd = serv->workdir_fd;
         sw->sess = NULL;
-        sw->fds = NULL;
-        sw->nfds = 0;
         sw->timeout = -1;
-        sw->has_finished = 0;
         sw->swd = serv->swd;
         pipe(fd);
-        start_poll_fd(sw, fd[0]);
+        sw->chanfd = fd[0];
+        start_poll_fd(sw, sw->chanfd, NULL);
         serv->worker_fds[id] = fd[1];
         return sw;
 }

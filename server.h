@@ -1,9 +1,11 @@
 #ifndef SERVER_H_SENTRY
 #define SERVER_H_SENTRY
 
+#include <sys/epoll.h>
 #include <sys/types.h>
 #include <pthread.h>
 
+#define EVENT_MAX 1024
 #define INBUFSIZE 1024
 #define OUTBUFSIZE 4096
 #define EXTRA_FDS_AMOUNT 4000
@@ -22,7 +24,6 @@ enum fsm_state {
 };
 
 struct session {
-        int fds_idx;
         int socket_d;
         int tx_fd;
         char *tx_buf;
@@ -36,6 +37,7 @@ struct session {
         unsigned short port;
         enum fsm_state state;
         struct http_request *request;
+        struct session *prev;
         struct session *next;
 };
 
@@ -61,14 +63,14 @@ struct http_server {
 };
 
 struct service_worker {
+        int eventfd;
+        int timeout;
+        int chanfd;
         int worker_id;
         int workdir_fd;
         struct session *sess;
-        struct pollfd *fds;
-        int nfds;
-        int timeout;
-        int has_finished;
         struct shared_worker_data *swd;
+        struct epoll_event events[EVENT_MAX];
 };
 
 /* handles signals, listening socket and client connections */

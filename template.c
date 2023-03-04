@@ -103,14 +103,14 @@ const char *fmt1 = "<!DOCTYPE html>\n"
         write_fbuf_format(sess, fmt4, "..", "/", "..",
                           "Parent directory", "/", st_buf.st_size,
                           get_format_data(st_buf.st_mtime));
- 
+
         while ((dent = readdir(dirp))) {
                 const char *s;
                 fstatat(dir_fd, dent->d_name, &st_buf, 0);
                 if (!S_ISREG(st_buf.st_mode) && !S_ISDIR(st_buf.st_mode))
                         continue;
                 if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, ".."))
-                        continue; 
+                        continue;
                 s = S_ISDIR(st_buf.st_mode) ? "/" : "";
                 write_fbuf_format(sess, fmt4, dent->d_name, s, dent->d_name,
                            dent->d_name, s, st_buf.st_size,

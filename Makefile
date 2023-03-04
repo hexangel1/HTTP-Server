@@ -11,7 +11,7 @@ CC = gcc
 CTAGS = ctags
 INSTALL = install
 PREFIX = /usr/local
-ARGV = -w 8 -i 127.0.0.1 -p 8080 -a /home/hexangel/Documents
+ARGV = -w 8 -i 127.0.0.1 -p 8080
 TESTFILE = test.bin
 
 $(PROJECT): $(OBJECTS)

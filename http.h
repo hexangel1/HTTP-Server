@@ -56,8 +56,8 @@ enum http_status_constant {
         status_too_many_requests               = 429,
         status_request_header_fields_too_large = 431,
         status_unavailable_for_legal_reasons   = 451,
- 
-        status_internal_server_error           = 500, 
+
+        status_internal_server_error           = 500,
         status_not_implemented                 = 501,
         status_bad_gateway                     = 502,
         status_service_unavailable             = 503,

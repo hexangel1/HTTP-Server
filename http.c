@@ -231,6 +231,6 @@ struct http_request *http_parse_request(const char *buf, int size)
                 free(req);
                 return NULL;
         }
-        return req; 
+        return req;
 }
 

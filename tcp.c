@@ -153,7 +153,7 @@ ssize_t tcp_sendfile(int sockfd, int fd, size_t count)
         return sendfile(sockfd, fd, NULL, count);
 }
 #else
-#define TCP_BUFFER_SIZE (1 << 16) 
+#define TCP_BUFFER_SIZE (1 << 16)
 ssize_t tcp_sendfile(int sockfd, int fd, size_t count)
 {
         ssize_t rc, wc, transfered = 0;
