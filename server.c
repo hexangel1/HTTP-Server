@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/epoll.h>
 #include <sys/resource.h>
 #include <errno.h>
 #include "server.h"
@@ -291,7 +292,7 @@ static void *worker_thread(void *data)
         block_signals();
         for (;;) {
                 nfds = epoll_wait(w->eventfd, w->events, EVENT_MAX, w->timeout);
-                if (nfds == -1) {
+                if (nfds == -1 && errno != EINTR) {
                         perror("epoll_wait");
                         abort();
                 }
@@ -319,26 +320,32 @@ break_event_loop:
 
 static struct service_worker *make_worker(struct http_server *serv, int id)
 {
-        int fd[2];
-        struct service_worker *sw = malloc(sizeof(*sw));
-        sw->eventfd = epoll_create(1);
-        if (sw->eventfd == -1) {
+        int fds[2], evfd, res;
+        struct service_worker *sw;
+        evfd = epoll_create(1);
+        if (evfd == -1) {
                 perror("epoll_create");
-                /* handle error */
+                return NULL;
         }
+        res = pipe(fds);
+        if (res == -1) {
+                perror("pipe");
+                return NULL;
+        }
+        sw = malloc(sizeof(*sw));
         sw->worker_id = id;
+        sw->eventfd = evfd;
         sw->workdir_fd = serv->workdir_fd;
         sw->sess = NULL;
         sw->timeout = -1;
         sw->swd = serv->swd;
-        pipe(fd);
-        sw->chanfd = fd[0];
+        sw->chanfd = fds[0];
+        serv->worker_fds[id] = fds[1];
         start_poll_fd(sw, sw->chanfd, NULL);
-        serv->worker_fds[id] = fd[1];
         return sw;
 }
 
-static void create_workers(struct http_server *serv)
+static int create_workers(struct http_server *serv)
 {
         int i, res;
         struct service_worker *w;
@@ -347,14 +354,17 @@ static void create_workers(struct http_server *serv)
         pthread_attr_init(&attr);
         for (i = 0; i < serv->workers_amount; i++) {
                 w = make_worker(serv, i);
+                if (!w)
+                        return -1;
                 res = pthread_create(&tid, &attr, worker_thread, w);
                 if (res != 0) {
                         perror("pthread_create");
-                        exit(EXIT_FAILURE);
+                        return -1;
                 }
                 serv->thread_ids[i] = tid;
         }
         pthread_attr_destroy(&attr);
+        return 0;
 }
 
 static void stop_workers(struct http_server *serv)
@@ -405,20 +415,17 @@ void http_server_handle(struct http_server *serv)
 int http_server_up(struct http_server *serv)
 {
         int res;
-        res = open(serv->workdir, O_RDONLY | O_DIRECTORY);
-        if (res == -1)
+        serv->workdir_fd = open(serv->workdir, O_RDONLY | O_DIRECTORY);
+        if (serv->workdir_fd == -1)
                 return -1;
-        serv->workdir_fd = res;
-        res = tcp_create_socket(serv->ipaddr, serv->port);
-        if (res == -1)
+        serv->listen_sock = tcp_create_socket(serv->ipaddr, serv->port);
+        if (serv->listen_sock == -1)
                 return -1;
-        serv->listen_sock = res;
-        register_sigactions();
         res = unlock_more_fds(EXTRA_FDS_AMOUNT);
         if (res == -1)
                 return -1;
-        create_workers(serv);
-        return 0;
+        register_sigactions();
+        return create_workers(serv);
 }
 
 void http_server_down(struct http_server *serv)
