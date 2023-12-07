@@ -1,7 +1,8 @@
-#include <stdio.h>
-#include <stdlib.h>
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include "server.h"
 #include "userthread.h"
