@@ -23,6 +23,7 @@ enum fsm_state {
         st_handle,
         st_transfer,
         st_waiting,
+        st_waitexit,
         st_goodbye
 };
 
@@ -32,6 +33,7 @@ typedef void (*http_handler)(struct session *);
 struct session {
         int socket_d;
         int control_fd[2];
+        int defered_exit;
         int tx_fd;
         struct data_buffer *tx_buf;
         size_t tx_len;

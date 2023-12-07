@@ -130,6 +130,7 @@ static struct session *create_session(int sockfd)
         ptr->socket_d = sockfd;
         ptr->control_fd[0] = -1;
         ptr->control_fd[1] = -1;
+        ptr->defered_exit = 0;
         ptr->tx_fd = -1;
         ptr->tx_buf = NULL;
         ptr->buf_used = 0;
@@ -160,6 +161,17 @@ static void delete_session(struct session *ptr)
         free(ptr);
 }
 
+static void exit_session(struct http_server *serv, struct session *ptr)
+{
+        if (ptr->state == st_waiting) {
+                ptr->state = st_waitexit;
+                ptr->defered_exit = 1;
+                stop_poll_fd(serv->wpd, ptr->socket_d);
+        } else {
+                ptr->state = st_goodbye;
+        }
+}
+
 static void add_session(struct http_server *serv, int sockfd)
 {
         struct session *ctx;
@@ -176,7 +188,8 @@ static void add_session(struct http_server *serv, int sockfd)
 
 static void remove_session(struct worker_process_data *wpd, struct session *ptr)
 {
-        stop_poll_fd(wpd, ptr->socket_d);
+        if (!ptr->defered_exit)
+                stop_poll_fd(wpd, ptr->socket_d);
         if (ptr->next)
                 ptr->next->prev = ptr->prev;
         if (ptr->prev)
@@ -298,21 +311,21 @@ static int handle_thread_exit(struct http_server *serv, struct session *sess)
         close(sess->control_fd[1]);
         sess->control_fd[0] = -1;
         sess->control_fd[1] = -1;
-        sess->state = st_handle;
+        sess->state = sess->state == st_waiting ? st_handle : st_goodbye;
         return 1;
 }
 
 static void receive_data(struct http_server *serv, struct session *ptr)
 {
         int rc, busy = ptr->buf_used;
-        if (ptr->state == st_waiting) {
+        if (ptr->state == st_waiting || ptr->state == st_waitexit) {
                 int exited = handle_thread_exit(serv, ptr);
                 if (exited)
                         return;
         }
         rc = tcp_recv(ptr->socket_d, ptr->buf + busy, INBUFSIZE - busy);
         if (rc <= 0) {
-                ptr->state = st_goodbye;
+                exit_session(serv, ptr);
                 return;
         }
         if (ptr->state != st_request)
@@ -323,7 +336,7 @@ static void receive_data(struct http_server *serv, struct session *ptr)
                 ptr->state = st_handle;
         } else {
                 if (ptr->buf_used >= INBUFSIZE)
-                        ptr->state = st_goodbye;
+                        exit_session(serv, ptr);
         }
 }
 
