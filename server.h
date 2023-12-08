@@ -2,6 +2,7 @@
 #define SERVER_H_SENTRY
 
 #include <signal.h>
+#include "http.h"
 #include "tree.h"
 #include "buffer.h"
 
@@ -28,7 +29,8 @@ enum fsm_state {
 };
 
 struct session;
-typedef void (*http_handler)(struct session *);
+typedef void (*http_handler)(struct session *, struct http_request *request);
+typedef safe_value_t *(*user_thread)(safe_value_t *arg, struct http_request *request);
 
 struct session {
         int socket_d;
@@ -45,9 +47,12 @@ struct session {
         unsigned short port;
         int first_handler;
         enum fsm_state state;
-        void *userdata;
         http_handler callback;
-        http_handler user_thread;
+        user_thread user_job;
+        safe_value_t *job_arg;
+        safe_value_t *job_ret;
+        safe_value_t *userdata;
+        safe_value_t *next_arg;
         struct http_request *request;
         struct session *prev;
         struct session *next;
@@ -97,9 +102,17 @@ void http_handle(struct http_server *serv, const char *path,
 void http_send_file(struct session *sess, int fd, size_t bytes);
 
 void http_send_buffer(struct session *sess, struct data_buffer *dbuf);
-void http_spawn_thread(struct session *sess, http_handler user_thread);
-void http_set_userdata(struct session *sess, void *userdata);
+void http_spawn_thread(struct session *sess, user_thread job, safe_value_t *arg);
+
+void http_set_userdata(struct session *sess, void *val, value_destructor del);
 void *http_get_userdata(struct session *sess);
+void *http_pick_userdata(struct session *sess);
+
+void *http_get_arg(struct session *sess);
+void *http_get_ret(struct session *sess);
+void *http_pick_arg(struct session *sess);
+void *http_pick_ret(struct session *sess);
+
 void http_set_callback(struct session *sess, http_handler func);
 
 /* creates new http server */

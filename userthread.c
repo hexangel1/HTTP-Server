@@ -11,8 +11,8 @@ static void *thread_runner(void *data)
 {
         struct session *sess = data;
         fprintf(stderr, "thread started\n");
-        sess->user_thread(sess);
-        sess->user_thread = NULL;
+        sess->job_ret = sess->user_job(sess->job_arg, sess->request);
+        sess->user_job = NULL;
         fprintf(stderr, "thread finished\n");
         write(sess->control_fd[1], "", 1);
         pthread_exit(NULL);
@@ -23,7 +23,7 @@ int user_thread_run(struct session *sess)
         int res;
         pthread_t tid;
         pthread_attr_t attr;
-        if (!sess->user_thread)
+        if (!sess->user_job)
                 return -1;
         res = pipe2(sess->control_fd, O_NONBLOCK);
         if (res == -1) {

@@ -10,7 +10,9 @@
 #include <sys/resource.h>
 #include "server.h"
 #include "http.h"
+#include "buffer.h"
 #include "template.h"
+#include <time.h>
 
 static int daemon_state = 0;
 static int workers_amount = 8;
@@ -90,35 +92,37 @@ static int get_command_line_options(int argc, char **argv)
         return retval;
 }
 
-static void my_handler(struct session *sess)
+static void my_handler(struct session *sess, struct http_request *req)
 {
         fprintf(stderr, "Hello, World!\n");
         http_response(sess, status_internal_server_error);
 }
 
-static void my_callback(struct session *sess)
+static void my_callback(struct session *sess, struct http_request *req)
 {
         struct data_buffer *dbuf;
-        dbuf = http_get_userdata(sess);
-        http_set_userdata(sess, NULL);
+        dbuf = http_pick_ret(sess);
         http_send_buffer(sess, dbuf);
         http_response(sess, status_ok);
         http_content_headers(sess, "text/html", sess->tx_len, time(NULL));
 }
 
-static void my_thread(struct session *sess)
-{       
-        struct data_buffer *dbuf;
-        int *fdptr = http_get_userdata(sess);
-        dbuf = generate_index_page(sess->request->path, *fdptr);
-        close(*fdptr);
+static void fd_closer(void *fdptr)
+{
+        close(*(int *)fdptr);
         free(fdptr);
-        http_set_userdata(sess, dbuf);
-        http_set_callback(sess, my_callback);
-        sleep(10);
 }
 
-static void my_handler2(struct session *sess)
+static safe_value_t *my_thread(safe_value_t *arg, struct http_request *req)
+{       
+        struct data_buffer *dbuf;
+        int *fdptr = get_safe_value(arg);
+        dbuf = generate_index_page(req->path, *fdptr);
+        sleep(5);
+        return make_safe_value(dbuf, free_buffer2);
+}
+
+static void my_handler2(struct session *sess, struct http_request *req)
 {
         int res, fd;
         char path[512];
@@ -140,8 +144,8 @@ static void my_handler2(struct session *sess)
         if (S_ISDIR(st_buf.st_mode)) {
                 int *ptr = malloc(sizeof(int));
                 *ptr = fd;
-                http_set_userdata(sess, ptr);
-                http_spawn_thread(sess, my_thread);
+                http_spawn_thread(sess, my_thread, make_safe_value(ptr, fd_closer));
+                http_set_callback(sess, my_callback);
         } else {
                 http_response(sess, status_ok);
                 http_content_headers(sess, "binary", st_buf.st_size, st_buf.st_mtime);

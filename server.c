@@ -139,8 +139,11 @@ static struct session *create_session(int sockfd)
         ptr->port = get_peer_port(sockfd);
         ptr->first_handler = 1;
         ptr->state = st_request;
-        ptr->userdata = NULL;
-        ptr->user_thread = NULL;
+        ptr->userdata = make_safe_value(NULL, NULL);
+        ptr->user_job = NULL;
+        ptr->job_arg = NULL;
+        ptr->job_ret = NULL;
+        ptr->next_arg = NULL;
         ptr->callback = NULL;
         ptr->request = NULL;
         ptr->prev = NULL;
@@ -155,6 +158,10 @@ static void delete_session(struct session *ptr)
                 close(ptr->tx_fd);
         if (ptr->tx_buf)
                 free_buffer(ptr->tx_buf);
+        free_safe_value(ptr->userdata);
+        free_safe_value(ptr->job_arg);
+        free_safe_value(ptr->job_ret);
+        free_safe_value(ptr->next_arg);
         free_buffer(ptr->sendbuf);
         free(ptr->request);
         free(ptr->ipaddr);
@@ -261,6 +268,11 @@ static unsigned int get_handler_no(struct http_server *serv, const char *req_pat
 
 static void callback_post_func(struct http_server *serv, struct session *sess)
 {
+        free_safe_value(sess->job_arg);
+        free_safe_value(sess->job_ret);
+        sess->job_arg = sess->next_arg;
+        sess->job_ret = NULL;
+        sess->next_arg = NULL;
         if (sess->sendbuf->buf_used > 0)
                 send_buffer(sess);
         if (sess->state == st_transfer)
@@ -293,7 +305,7 @@ static void handle_request(struct http_server *serv, struct session *sess)
         if (sess->callback) {
                 http_handler callback = sess->callback;
                 sess->callback = NULL;
-                callback(sess);
+                callback(sess, sess->request);
                 callback_post_func(serv, sess);
         } else {
                 sess->state = st_goodbye;
@@ -566,20 +578,54 @@ void http_send_buffer(struct session *sess, struct data_buffer *dbuf)
         sess->state = st_transfer;
 }
 
-void http_spawn_thread(struct session *sess, http_handler user_thread)
+void http_spawn_thread(struct session *sess, user_thread job, safe_value_t *arg)
 {
-        sess->user_thread = user_thread;
+        sess->user_job = job;
+        sess->next_arg = arg;
         sess->state = st_waiting;
 }
 
-void http_set_userdata(struct session *sess, void *userdata)
+void http_set_userdata(struct session *sess, void *val, value_destructor del)
 {
-        sess->userdata = userdata;
+        rewrite_safe_value(sess->userdata, val, del);
 }
 
 void *http_get_userdata(struct session *sess)
 {
-        return sess->userdata;
+        return get_safe_value(sess->userdata);
+}
+
+void *http_pick_userdata(struct session *sess)
+{
+        return pick_safe_value(sess->userdata);
+}
+
+void *http_get_arg(struct session *sess)
+{
+        if (!sess->job_arg)
+                return NULL;
+        return get_safe_value(sess->job_arg);
+}
+
+void *http_get_ret(struct session *sess)
+{
+        if (!sess->job_ret)
+                return NULL;
+        return get_safe_value(sess->job_ret);
+}
+
+void *http_pick_arg(struct session *sess)
+{
+        if (!sess->job_arg)
+                return NULL;
+        return pick_safe_value(sess->job_arg);
+}
+
+void *http_pick_ret(struct session *sess)
+{
+        if (!sess->job_ret)
+                return NULL;
+        return pick_safe_value(sess->job_ret);
 }
 
 void http_set_callback(struct session *sess, http_handler func)

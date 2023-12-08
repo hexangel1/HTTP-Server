@@ -82,6 +82,8 @@ struct http_request {
         char proto[proto_size];
 };
 
+struct session;
+
 /* write http response to buffer */
 void http_response(struct session *sess, int code);
 
