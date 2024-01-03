@@ -7,7 +7,7 @@
 #include "buffer.h"
 
 #define EVENT_MAX 1024
-#define INBUFSIZE 1024
+#define INBUFSIZE 4096
 #define OUTBUFSIZE 4096
 #define EXTRA_FDS_AMOUNT 4000
 #define WORKER_NUMBER_MAX 1024
@@ -21,6 +21,7 @@ enum signal_event {
 
 enum fsm_state {
         st_request,
+        st_readbody,
         st_handle,
         st_transfer,
         st_waiting,

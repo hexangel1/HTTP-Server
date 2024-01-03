@@ -163,7 +163,7 @@ static void delete_session(struct session *ptr)
         free_safe_value(ptr->job_ret);
         free_safe_value(ptr->next_arg);
         free_buffer(ptr->sendbuf);
-        free(ptr->request);
+        free_http_request(ptr->request);
         free(ptr->ipaddr);
         free(ptr);
 }
@@ -187,7 +187,7 @@ static void add_session(struct http_server *serv, int sockfd)
         ctx->prev = NULL;
         ctx->next = wpd->sess;
         if (wpd->sess)
-            wpd->sess->prev = ctx;
+                wpd->sess->prev = ctx;
         wpd->sess = ctx;
         start_poll_fd(wpd, ctx->socket_d, ctx);
         debug_log(serv, "connect from %s:%d\n", ctx->ipaddr, ctx->port);
@@ -229,7 +229,7 @@ static unsigned int get_handler_no(struct http_server *serv, const char *req_pat
         int i, slash_amount = 0, pathlen = 0;
         unsigned int handler_no = -1;
         char *path;
-       
+
         for (i = 0; req_path[i]; ++i) {
                 if (req_path[i] == '/')
                         ++slash_amount;
@@ -340,16 +340,27 @@ static void receive_data(struct http_server *serv, struct session *ptr)
                 exit_session(serv, ptr);
                 return;
         }
-        if (ptr->state != st_request)
+        if (ptr->state != st_request && ptr->state != st_readbody)
                 return;
         ptr->buf_used += rc;
-        if (http_check_request_end(ptr->buf, ptr->buf_used)) {
+        if (ptr->state == st_request && http_check_request_end(ptr->buf, ptr->buf_used)) {
                 ptr->request = http_parse_request(ptr->buf, ptr->buf_used);
+                if (ptr->request) {
+                        if (ptr->request->body_got < ptr->request->body_size) {
+                                ptr->state = st_readbody;
+                        } else {
+                                ptr->state = st_handle;
+                        }
+                } else {
+                        ptr->state = st_goodbye;
+                }
+        } else if (ptr->state == st_readbody &&
+                   ptr->buf_used - ptr->request->body_offset >= ptr->request->body_size) {
+                http_set_body(ptr->request, ptr->buf, ptr->buf_used);
                 ptr->state = st_handle;
-        } else {
-                if (ptr->buf_used >= INBUFSIZE)
-                        exit_session(serv, ptr);
         }
+        if (ptr->state != st_handle && ptr->buf_used >= INBUFSIZE)
+                exit_session(serv, ptr);
 }
 
 static void send_data(struct http_server *serv, struct session *ptr)

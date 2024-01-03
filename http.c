@@ -11,6 +11,33 @@
 void *memmem(const void *haystack, size_t haystacklen,
              const void *needle, size_t needlelen);
 
+static void set_header(struct http_headers *headers, const char *key, const char *val)
+{
+        int old_size = headers->header_allocated;
+        hashmap_insert(headers->header_idx, key, headers->header_number);
+        if (headers->header_number == old_size) {
+                headers->header_allocated = old_size ? old_size << 1 : 8;
+                headers->header_values = realloc(headers->header_values,
+                                                 headers->header_allocated * sizeof(char *));
+        }
+        headers->header_values[headers->header_number] = strdup(val);
+        headers->header_number++;
+}
+
+static const char *get_header(struct http_headers *headers, const char *key)
+{
+        uint64_t num = hashmap_search(headers->header_idx, key);
+        return num != HASHMAP_MISS ? headers->header_values[num] : NULL;
+}
+
+static void init_headers(struct http_headers *headers)
+{
+        headers->header_allocated = 0;
+        headers->header_number = 0;
+        headers->header_values = NULL;
+        headers->header_idx = make_map();
+}
+
 static int parse_request_line(struct http_request *req,
                               const char *buf, int size)
 {
@@ -52,6 +79,53 @@ static int parse_request_line(struct http_request *req,
                 }
         }
         return -1;
+}
+
+static int parse_request_headers(struct http_request *req, const char *buf, int size)
+{
+        static char header_key_buf[header_key_size];
+        static char header_val_buf[header_val_size];
+        size_t header_key_size, header_val_size;
+        char *curr, *end, *next, *colon;
+
+        curr = memmem(buf, size, "\r\n", 2);
+        if (!curr)
+                return -1;
+        end = memmem(buf, size, "\r\n\r\n", 4);
+        if (!end)
+                return -1;
+        req->body_offset = end + 4 - buf;
+
+        for (curr += 2, end += 2; curr != end; curr = next + 2) {
+                next = memmem(curr, size - (curr - buf),  "\r\n", 2);
+                colon = memmem(curr, next - curr, ": ", 2);
+                if (!colon)
+                        return -1;
+                header_key_size = colon - curr;
+                colon += 2;
+                header_val_size = next - colon;
+
+                if (header_key_size > sizeof(header_key_buf) - 1 ||
+                    header_val_size > sizeof(header_val_buf) - 1)
+                        return -1;
+
+                memcpy(header_key_buf, curr, header_key_size);
+                memcpy(header_val_buf, colon, header_val_size);
+                header_key_buf[header_key_size] = 0;
+                header_val_buf[header_val_size] = 0;
+                set_header(&req->headers, header_key_buf, header_val_buf);
+        }
+        return 0;
+}
+
+static void parse_request_body(struct http_request *req, const char *buf, int size)
+{
+        const char *content_len = get_header(&req->headers, "Content-Length");
+        req->body_size = content_len ? atol(content_len) : 0;
+        req->body_got = size - req->body_offset;
+        fprintf(stderr, "body_got = %ld, body_size = %ld\n", req->body_got, req->body_size);
+        if (req->body_got >= req->body_size)
+                http_set_body(req, buf, size);
 }
 
 static const char *get_status_text(enum http_status_constant code)
@@ -196,6 +270,61 @@ static const char *get_http_fmt_date(time_t tm)
         return buff;
 }
 
+struct request_dbuf {
+        struct http_request *req;
+        struct data_buffer *dbuf;
+};
+
+static void write_buf_header(const char *key, uint64_t val, void *rdp)
+{
+        struct request_dbuf *rd = rdp;
+        write_buf_format(rd->dbuf, "%s: %s\r\n", key, rd->req->headers.header_values[val]);
+}
+
+struct data_buffer *http_get_rawdata(struct http_request *req)
+{
+        struct request_dbuf rd;
+        size_t request_size = request_line_size + req->body_size +
+                              header_size * req->headers.header_number + 2;
+        struct data_buffer *dbuf = make_buffer(request_size);
+        rd.dbuf = dbuf;
+        rd.req = req;
+        write_buf_format(dbuf, "%s %s %s\r\n", req->method, req->path, req->proto);
+        hashmap_foreach(req->headers.header_idx, write_buf_header, &rd);
+        write_buf_format(dbuf, "\r\n");
+        write_buf_data(dbuf, req->body, req->body_size);
+        return dbuf;
+}
+
+void free_http_request(struct http_request *req)
+{
+        size_t idx;
+        if (!req)
+                return;
+        delete_map(req->headers.header_idx);
+        for (idx = 0; idx < req->headers.header_number; ++idx)
+                free(req->headers.header_values[idx]);
+        free(req->headers.header_values);
+        free(req->body);
+        free(req);
+}
+
+const char *http_get_header(struct http_request *req, const char *key)
+{
+        return get_header(&req->headers, key);
+}
+
+void http_set_header(struct http_request *req, const char *key, const char *val)
+{
+        set_header(&req->headers, key, val);
+}
+
+void http_set_body(struct http_request *req, const char *buf, int size)
+{
+        req->body = malloc(req->body_size);
+        memcpy(req->body, buf + req->body_offset, req->body_size);
+}
+
 void http_response(struct session *sess, int code)
 {
         struct data_buffer *dbuf = sess->sendbuf;
@@ -220,20 +349,28 @@ void http_crlf(struct session *sess)
         write_buf_format(sess->sendbuf, "\r\n");
 }
 
-void *http_check_request_end(const char *buf, int size)
+int http_check_request_end(const char *buf, int size)
 {
-        return size >= 4 && memcmp(buf + size - 4, "\r\n\r\n", 4) ? NULL : (void *)buf;
+        return memmem(buf, size, "\r\n\r\n", 4) ? 1 : 0;
 }
 
 struct http_request *http_parse_request(const char *buf, int size)
 {
         int res;
         struct http_request *req = malloc(sizeof(*req));
+        req->body = NULL;
+        init_headers(&req->headers);
         res = parse_request_line(req, buf, size);
         if (res == -1) {
-                free(req);
+                free_http_request(req);
                 return NULL;
         }
+        res = parse_request_headers(req, buf, size);
+        if (res == -1) {
+                free_http_request(req);
+                return NULL;
+        }
+        parse_request_body(req, buf, size);
         return req;
 }
 

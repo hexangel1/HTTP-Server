@@ -1,6 +1,9 @@
 #ifndef HTTP_H_SENTRY
 #define HTTP_H_SENTRY
 
+#include <stdlib.h>
+#include "hashmap.h"
+
 enum http_status_constant {
         status_continue            = 100,
         status_switching_protocols = 101,
@@ -71,15 +74,32 @@ enum http_status_constant {
 };
 
 enum http_request_constant {
-        method_size = 16,
-        path_size   = 256,
-        proto_size  = 16
+        method_size     = 16,
+        path_size       = 256,
+        proto_size      = 16,
+        header_key_size = 1024,
+        header_val_size = 1024,
+
+        request_line_size = method_size + path_size + proto_size + 4,
+        header_size = header_key_size + header_val_size + 4
+};
+
+struct http_headers {
+        int header_number;
+        int header_allocated;
+        char **header_values;
+        struct hashmap *header_idx;
 };
 
 struct http_request {
         char method[method_size];
         char path[path_size];
         char proto[proto_size];
+        struct http_headers headers;
+        char *body;
+        size_t body_size;
+        size_t body_offset;
+        size_t body_got;
 };
 
 struct session;
@@ -95,10 +115,16 @@ void http_content_headers(struct session *sess, const char *type,
 void http_crlf(struct session *sess);
 
 /* http_check_request_end checks is the request finished */
-void *http_check_request_end(const char *buf, int size);
+int http_check_request_end(const char *buf, int size);
 
 /* http_parse_request return parsed http request */
 struct http_request *http_parse_request(const char *buf, int size);
+
+void free_http_request(struct http_request *req);
+
+void http_set_body(struct http_request *req, const char *buf, int size);
+
+struct data_buffer *http_get_rawdata(struct http_request *req);
 
 #endif /* HTTP_H_SENTRY */
 
