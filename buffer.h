@@ -24,6 +24,8 @@ void free_buffer2(void *data);
 
 void write_buf_format(struct data_buffer *dbuf, const char *fmt, ...);
 
+void write_buf_data(struct data_buffer *dbuf, const char *data, size_t len);
+
 safe_value_t *make_safe_value(void *val, value_destructor del);
 
 void rewrite_safe_value(safe_value_t *sv, void *val, value_destructor del);

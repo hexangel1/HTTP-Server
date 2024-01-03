@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 #include "buffer.h"
 
 struct data_buffer *make_buffer(size_t size)
@@ -32,6 +33,15 @@ void write_buf_format(struct data_buffer *dbuf, const char *fmt, ...)
         dbuf->buf_used += vsnprintf(dbuf->data + dbuf->buf_used,
                                     dbuf->buf_size - dbuf->buf_used, fmt, vl);
         va_end(vl);
+}
+
+void write_buf_data(struct data_buffer *dbuf, const char *data, size_t len)
+{
+        size_t bytes_can_write = dbuf->buf_size - dbuf->buf_used;
+        if (len > bytes_can_write)
+                len = bytes_can_write;
+        memcpy(dbuf->data + dbuf->buf_used, data, len);
+        dbuf->buf_used += len;
 }
 
 static void default_deleter(void *data)
