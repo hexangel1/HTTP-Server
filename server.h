@@ -5,6 +5,7 @@
 #include "http.h"
 #include "tree.h"
 #include "buffer.h"
+#include "array.h"
 
 #define EVENT_MAX 1024
 #define INBUFSIZE 4096
@@ -70,6 +71,8 @@ struct worker_process_data {
         struct session *sess;
 };
 
+DECLARE_ARRAY_OF(handlers_disposition, http_handler);
+
 struct http_server {
         int workdir_fd;
         int listen_sock;
@@ -79,9 +82,7 @@ struct http_server {
         char *ipaddr;
         unsigned short port;
         sigset_t sigmask;
-        size_t handlers_set;
-        size_t handlers_size;
-        http_handler *handlers;
+        handlers_disposition handlers;
         struct tree_node *root;
         struct master_process_data *mpd;
         struct worker_process_data *wpd;

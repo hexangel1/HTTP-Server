@@ -298,7 +298,7 @@ static void handle_request(struct http_server *serv, struct session *sess)
                         http_response(sess, status_not_found);
                         send_buffer(sess);
                 } else {
-                        sess->callback = serv->handlers[handler_idx];
+                        sess->callback = ARRAY_GET(&serv->handlers, handler_idx);
                 }
                 sess->first_handler = 0;
         }
@@ -554,7 +554,7 @@ void http_server_down(struct http_server *serv)
                 free(serv->mpd);
         }
         tree_free(serv->root);
-        free(serv->handlers);
+        ARRAY_FREE(&serv->handlers);
         free(serv->wpd);
         free(serv->workdir);
         free(serv->ipaddr);
@@ -564,13 +564,8 @@ void http_server_down(struct http_server *serv)
 void 
 http_handle(struct http_server *serv, const char *path, http_handler handler)
 {
-        tree_set(&serv->root, path, serv->handlers_set);
-        if (serv->handlers_set == serv->handlers_size) {
-                serv->handlers_size <<= 1;
-                serv->handlers = realloc(serv->handlers, sizeof(http_handler) * serv->handlers_size);
-        }
-        serv->handlers[serv->handlers_set] = handler;
-        serv->handlers_set++;
+        tree_set(&serv->root, path, ARRAY_LEN(&serv->handlers));
+        ARRAY_APPEND(&serv->handlers, handler);
 }
 
 void http_send_file(struct session *sess, int fd, size_t bytes)
@@ -654,9 +649,8 @@ struct http_server *new_http_server(const char *ipaddr, unsigned short port,
         serv->workdir = strdup(workdir);
         serv->ipaddr = strdup(ipaddr);
         serv->port = port;
-        serv->handlers_set = 0;
-        serv->handlers_size = 16;
-        serv->handlers = malloc(sizeof(http_handler) * serv->handlers_size);
+
+        ARRAY_INIT(&serv->handlers, 16);
         serv->root = NULL;
         sigemptyset(&serv->sigmask);
         serv->mpd = NULL;
