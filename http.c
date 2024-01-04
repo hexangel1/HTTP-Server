@@ -11,31 +11,26 @@
 void *memmem(const void *haystack, size_t haystacklen,
              const void *needle, size_t needlelen);
 
+static const char *const http_methods[] = {
+        "GET", "POST", "PUT", "DELETE"
+};
+
 static void set_header(struct http_headers *headers, const char *key, const char *val)
 {
-        int old_size = headers->header_allocated;
-        hashmap_insert(headers->header_idx, key, headers->header_number);
-        if (headers->header_number == old_size) {
-                headers->header_allocated = old_size ? old_size << 1 : 8;
-                headers->header_values = realloc(headers->header_values,
-                                                 headers->header_allocated * sizeof(char *));
-        }
-        headers->header_values[headers->header_number] = strdup(val);
-        headers->header_number++;
+        hashmap_insert(headers->index, key, ARRAY_LEN(&headers->values));
+        ARRAY_APPEND(&headers->values, strdup(val));
 }
 
 static const char *get_header(struct http_headers *headers, const char *key)
 {
-        uint64_t num = hashmap_search(headers->header_idx, key);
-        return num != HASHMAP_MISS ? headers->header_values[num] : NULL;
+        uint64_t num = hashmap_search(headers->index, key);
+        return num != HASHMAP_MISS ? ARRAY_GET(&headers->values, num) : NULL;
 }
 
 static void init_headers(struct http_headers *headers)
 {
-        headers->header_allocated = 0;
-        headers->header_number = 0;
-        headers->header_values = NULL;
-        headers->header_idx = make_map();
+        ARRAY_INIT(&headers->values, 0);
+        headers->index = make_map();
 }
 
 static int parse_request_line(struct http_request *req,
@@ -275,36 +270,47 @@ struct request_dbuf {
         struct data_buffer *dbuf;
 };
 
-static void write_buf_header(const char *key, uint64_t val, void *rdp)
+static void write_buf_header(const char *key, uint64_t num, void *rdp)
 {
         struct request_dbuf *rd = rdp;
-        write_buf_format(rd->dbuf, "%s: %s\r\n", key, rd->req->headers.header_values[val]);
+        write_buf_format(rd->dbuf, "%s: %s\r\n",
+                         key, ARRAY_GET(&rd->req->headers.values, num));
 }
 
 struct data_buffer *http_get_rawdata(struct http_request *req)
 {
         struct request_dbuf rd;
         size_t request_size = request_line_size + req->body_size +
-                              header_size * req->headers.header_number + 2;
+                              header_size * ARRAY_LEN(&req->headers.values) + 2;
         struct data_buffer *dbuf = make_buffer(request_size);
         rd.dbuf = dbuf;
         rd.req = req;
         write_buf_format(dbuf, "%s %s %s\r\n", req->method, req->path, req->proto);
-        hashmap_foreach(req->headers.header_idx, write_buf_header, &rd);
+        hashmap_foreach(req->headers.index, write_buf_header, &rd);
         write_buf_format(dbuf, "\r\n");
         write_buf_data(dbuf, req->body, req->body_size);
         return dbuf;
 }
 
+struct http_request *http_curl(enum http_method method, const char *path)
+{
+        struct http_request *req = malloc(sizeof(*req));
+        strncpy(req->method, http_methods[method], method_size);
+        strncpy(req->proto, "HTTP/1.1", proto_size);
+        strncpy(req->path, path, path_size);
+        init_headers(&req->headers);
+        req->body_size = 0;
+        req->body_got = (size_t)-1;
+        req->body_offset = 0;
+        return req;
+}
+
 void free_http_request(struct http_request *req)
 {
-        size_t idx;
         if (!req)
                 return;
-        delete_map(req->headers.header_idx);
-        for (idx = 0; idx < req->headers.header_number; ++idx)
-                free(req->headers.header_values[idx]);
-        free(req->headers.header_values);
+        delete_map(req->headers.index);
+        ARRAY_FREE2(&req->headers.values, free);
         free(req->body);
         free(req);
 }
@@ -321,6 +327,8 @@ void http_set_header(struct http_request *req, const char *key, const char *val)
 
 void http_set_body(struct http_request *req, const char *buf, int size)
 {
+        if (req->body_got == (size_t)-1)
+                req->body_size = size;
         req->body = malloc(req->body_size);
         memcpy(req->body, buf + req->body_offset, req->body_size);
 }

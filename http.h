@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include "hashmap.h"
+#include "array.h"
 
 enum http_status_constant {
         status_continue            = 100,
@@ -73,22 +74,30 @@ enum http_status_constant {
         status_network_authentication_required = 511
 };
 
+enum http_method {
+        HTTP_GET,
+        HTTP_POST,
+        HTTP_PUT,
+        HTTP_DELETE
+};
+
 enum http_request_constant {
         method_size     = 16,
         path_size       = 256,
         proto_size      = 16,
-        header_key_size = 1024,
-        header_val_size = 1024,
+        status_size     = 64,
+        header_key_size = 64,
+        header_val_size = 4096,
 
         request_line_size = method_size + path_size + proto_size + 4,
         header_size = header_key_size + header_val_size + 4
 };
 
+DECLARE_ARRAY_OF(header_values, char*);
+
 struct http_headers {
-        int header_number;
-        int header_allocated;
-        char **header_values;
-        struct hashmap *header_idx;
+        header_values values;
+        struct hashmap *index;
 };
 
 struct http_request {
@@ -100,6 +109,15 @@ struct http_request {
         size_t body_size;
         size_t body_offset;
         size_t body_got;
+};
+
+struct http_response {
+        char proto[proto_size];
+        char status_text[status_size];
+        enum http_status_constant status;
+        struct http_headers headers;
+        char *body;
+        size_t body_size;
 };
 
 struct session;
@@ -125,6 +143,12 @@ void free_http_request(struct http_request *req);
 void http_set_body(struct http_request *req, const char *buf, int size);
 
 struct data_buffer *http_get_rawdata(struct http_request *req);
+
+struct http_request *http_curl(enum http_method method, const char *path);
+
+const char *http_get_header(struct http_request *req, const char *key);
+
+void http_set_header(struct http_request *req, const char *key, const char *val);
 
 #endif /* HTTP_H_SENTRY */
 
